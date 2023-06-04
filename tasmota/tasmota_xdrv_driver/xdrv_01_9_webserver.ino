@@ -436,6 +436,13 @@ enum WebCmndStatus { WEBCMND_DONE=0, WEBCMND_WRONG_PARAMETERS, WEBCMND_CONNECT_F
 DNSServer *DnsServer;
 ESP8266WebServer *Webserver;
 
+#include <base64.hpp>
+
+#define HMAC_MIN_SEQ 1685864000000.0                // Sun Jun 04 2023 07:33:20
+#define HMAC_NONCE_MIN_LENGTH 10
+
+float hmacLastSeq = HMAC_MIN_SEQ;
+
 struct WEB {
   String chunk_buffer = "";                         // Could be max 2 * CHUNKED_BUFFER_SIZE
   uint32_t upload_size = 0;
@@ -664,10 +671,138 @@ void PollDnsWebserver(void)
 
 /*********************************************************************************************/
 
+/** SHA-256 based HMAC. Copied and modified from xdrv_02_9_mqtt.ino */
+String Sha256Sign(String dataToSign, String secret){
+    AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_HTTP "sha256 dataToSign is '%s'"), String(dataToSign).c_str());
+
+    char dataToSignChar[dataToSign.length() + 1];
+    dataToSign.toCharArray(dataToSignChar, dataToSign.length() + 1);
+
+    unsigned char decodedSecret[32];
+    unsigned char encryptedSignature[100];
+    unsigned char encodedSignature[100];
+    br_sha256_context sha256_context;
+    br_hmac_key_context hmac_key_context;
+    br_hmac_context hmac_context;
+
+    // need to base64 decode the Preshared key and the length
+    int base64_decoded_device_length = decode_base64((unsigned char*) secret.c_str(), decodedSecret);
+
+    // create the sha256 hmac and hash the data
+    br_sha256_init(&sha256_context);
+    br_hmac_key_init(&hmac_key_context, sha256_context.vtable, decodedSecret, base64_decoded_device_length);
+    br_hmac_init(&hmac_context, &hmac_key_context, 32);
+    br_hmac_update(&hmac_context, dataToSignChar, sizeof(dataToSignChar)-1);
+    br_hmac_out(&hmac_context, encryptedSignature);
+
+    // HEX encode the binary signature
+    uint8 idx = 0;
+    uint8 len = br_hmac_size(&hmac_context);
+    for (int nr = 0; nr < len; ++nr) {
+      char bt = encryptedSignature[nr];
+      uint8 high = bt >> 4;
+      uint8 low = bt & 0x0f;
+      encodedSignature[idx++] = high <= 9 ? '0' + high : 'a' + high - 10;
+      encodedSignature[idx++] = low <= 9 ? '0' + low : 'a' + low - 10;
+    }
+    encodedSignature[idx++] = 0;
+
+    // creating the real SAS Token
+    AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_HTTP "sha256 signature is '%s'"), String((char*)encodedSignature).c_str());
+
+    return String((char*)encodedSignature);
+}
+
+/**
+ * SHA-256 based HMAC authentication:
+ *  - the Base64 encoded shared secret is stored in SET_WEB_HMAC_SECRET, and can be set via the WebHmacSecret command
+ *  - the request URI, without the "hmac" argument, must be signed with the shared secret using SHA-256 based HMAC signature
+ *  - the "seq" and "nonce" arguments are used to protect against replay attacks:
+ *    - the "seq" argument must be increasing float, and has the format "<utc-time-millis>.<seq-nr>"
+ *    - the "nonce" argument must be a random string of at least 10 characters
+*/
+bool HmacVerifyUrl() {
+    const char *secret = SettingsText(SET_WEB_HMAC_SECRET);
+    if (secret == NULL || strlen(secret) <= 0) {
+      // hmac is disabled
+      return true;
+    }
+
+    // build HMAC payload
+    String payload = Webserver->uri() + "?";
+    String hmac = "";
+    float seq = -2;
+    String nonce = "";
+    bool first = true;
+    for (int i = 0; i < Webserver->args(); ++i) {
+       if (Webserver->argName(i) == "hmac") {
+         hmac = Webserver->arg(i);
+
+       } else {
+         if (!first) {
+            payload += "&";
+
+         } else {
+            first = false;
+         }
+         payload += Webserver->argName(i) + "=" + Webserver->arg(i);
+         if (Webserver->argName(i) == "seq") {
+           seq = Webserver->arg(i).toFloat();
+
+         } else if (Webserver->argName(i) == "nonce") {
+           nonce = Webserver->arg(i);
+         }
+       }
+    }
+
+    AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_HTTP "HMAC payload is '%s'"), payload.c_str());
+
+    // validate sequence
+    const float utcMillis = 1000.0 * UtcTime();
+    if ((seq < hmacLastSeq) || (seq < utcMillis)) {
+      Webserver->send(403, "text/plain", "invalid seq");
+      return false;
+    }
+
+    // validate nonce
+    if (nonce.length() < HMAC_NONCE_MIN_LENGTH) {
+      Webserver->send(403, "text/plain", "missing nonce");
+      return false;
+    }
+
+    // validate hmac
+    if (hmac == "") {
+      Webserver->send(403, "text/plain", "missing hmac");
+      return false;
+    }
+
+    AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_HTTP "HMAC received signature is '%s'"), hmac.c_str());
+
+    const String hmacCalculated = Sha256Sign(payload, secret);
+
+    AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_HTTP "HMAC calculated signature is '%s'"), hmacCalculated.c_str());
+
+    if (hmacCalculated != hmac) {
+      Webserver->send(403, "text/plain", "incorrect hmac");
+      return false;
+    }
+
+    // update last seq nr
+    hmacLastSeq = seq;
+
+    // hmac validation passed
+    return true;
+}
+
 bool WebAuthenticate(void)
 {
-  if (strlen(SettingsText(SET_WEBPWD)) && (HTTP_MANAGER_RESET_ONLY != Web.state)) {
+  if (strlen(SettingsText(SET_WEB_HMAC_SECRET))) {
+    // HMAC based authentication is enabled
+    return HmacVerifyUrl();
+
+  } else if (strlen(SettingsText(SET_WEBPWD)) && (HTTP_MANAGER_RESET_ONLY != Web.state)) {
     return Webserver->authenticate(WEB_USERNAME, SettingsText(SET_WEBPWD));
+
   } else {
     return true;
   }
@@ -3457,7 +3592,7 @@ const char kWebCommands[] PROGMEM = "|"  // No prefix
 #ifdef USE_SENDMAIL
   D_CMND_SENDMAIL "|"
 #endif
-  D_CMND_WEBSERVER "|" D_CMND_WEBPASSWORD "|" D_CMND_WEBREFRESH "|" D_CMND_WEBSEND "|" D_CMND_WEBQUERY "|"
+  D_CMND_WEBSERVER "|" D_CMND_WEBPASSWORD "|" D_CMND_WEBHMACSECRET "|" D_CMND_WEBREFRESH "|" D_CMND_WEBSEND "|" D_CMND_WEBQUERY "|"
   D_CMND_WEBCOLOR "|" D_CMND_WEBSENSOR "|" D_CMND_WEBBUTTON
 #ifdef USE_WEBGETCONFIG
   "|" D_CMND_WEBGETCONFIG
@@ -3478,7 +3613,7 @@ void (* const WebCommand[])(void) PROGMEM = {
 #ifdef USE_SENDMAIL
   &CmndSendmail,
 #endif
-  &CmndWebServer, &CmndWebPassword, &CmndWebRefresh, &CmndWebSend, &CmndWebQuery,
+  &CmndWebServer, &CmndWebPassword, &CmndWebHmacSecret, &CmndWebRefresh, &CmndWebSend, &CmndWebQuery,
   &CmndWebColor, &CmndWebSensor, &CmndWebButton
 #ifdef USE_WEBGETCONFIG
   , &CmndWebGetConfig
@@ -3564,6 +3699,22 @@ void CmndWebPassword(void)
     SettingsUpdateText(SET_WEBPWD, (SC_CLEAR == Shortcut()) ? "" : (SC_DEFAULT == Shortcut()) ? WEB_PASSWORD : XdrvMailbox.data);
     if (!show_asterisk) {
       ResponseCmndChar(SettingsText(SET_WEBPWD));
+    }
+  } else {
+    show_asterisk = true;
+  }
+  if (show_asterisk) {
+    Response_P(S_JSON_COMMAND_ASTERISK, XdrvMailbox.command);
+  }
+}
+
+void CmndWebHmacSecret(void)
+{
+  bool show_asterisk = (2 == XdrvMailbox.index);
+  if (XdrvMailbox.data_len > 0) {
+    SettingsUpdateText(SET_WEB_HMAC_SECRET, (SC_CLEAR == Shortcut()) ? "" : (SC_DEFAULT == Shortcut()) ? WEB_HMAC_SECRET : XdrvMailbox.data);
+    if (!show_asterisk) {
+      ResponseCmndChar(SettingsText(SET_WEB_HMAC_SECRET));
     }
   } else {
     show_asterisk = true;

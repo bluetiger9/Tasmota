@@ -435,6 +435,7 @@
   #define D_JSON_ON_DEVICE "on"
   #define D_JSON_WITH_IP_ADDRESS "with IP address"
 #define D_CMND_WEBPASSWORD "WebPassword"
+#define D_CMND_WEBHMACSECRET "WebHmacSecret"
 #define D_CMND_WEBLOG "WebLog"
 #define D_CMND_WEBREFRESH "WebRefresh"
 #define D_CMND_WEBSEND "WebSend"

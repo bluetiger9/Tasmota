@@ -965,6 +965,7 @@ void SettingsDefaultSet2(void) {
   Settings->webserver = WEB_SERVER;
   Settings->weblog_level = WEB_LOG_LEVEL;
   SettingsUpdateText(SET_WEBPWD, PSTR(WEB_PASSWORD));
+  SettingsUpdateText(SET_WEB_HMAC_SECRET, PSTR(WEB_HMAC_SECRET));
   SettingsUpdateText(SET_CORS, PSTR(CORS_DOMAIN));
 #ifdef DISABLE_REFERER_CHK
   flag5.disable_referer_chk |= false;

@@ -483,6 +483,7 @@ enum SettingsTextIndex { SET_OTAURL,
                          SET_SHD_PARAM,
                          SET_RGX_SSID, SET_RGX_PASSWORD,
                          SET_INFLUXDB_HOST, SET_INFLUXDB_PORT, SET_INFLUXDB_ORG, SET_INFLUXDB_TOKEN, SET_INFLUXDB_BUCKET, SET_INFLUXDB_RP,
+                         SET_WEB_HMAC_SECRET,
                          SET_MAX };
 
 enum SpiInterfaces { SPI_NONE, SPI_MOSI, SPI_MISO, SPI_MOSI_MISO };
