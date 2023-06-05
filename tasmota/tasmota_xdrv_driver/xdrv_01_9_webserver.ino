@@ -17,6 +17,9 @@
   along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#define USE_WEBSERVER
+#undef USE_UNISHOX_COMPRESSION
+
 #ifdef USE_WEBSERVER
 /*********************************************************************************************\
  * Web server and WiFi Manager
@@ -206,6 +209,68 @@ const char HTTP_SCRIPT_INFO_END[] PROGMEM =
     "eb('i').innerHTML=s;"
   "}"
   "wl(i);";
+
+const char HTTP_SCRIPT_HMAC[] PROGMEM =
+  "msgSeqNr = 0;"
+  "function b64toArrBuf(base64) {"
+  "   var binaryString = atob(base64);"
+  "   var bytes = new Uint8Array(binaryString.length);"
+  "   for (var i = 0; i < binaryString.length; i++) {"
+  "      bytes[i] = binaryString.charCodeAt(i);"
+  "   }"
+  "   return bytes.buffer;"
+  "}"
+  "function hmacSha256(key, message) {"
+  "   const keyData = b64toArrBuf(key);"
+  "   const messageData = new TextEncoder().encode(message);"
+  "   return crypto.subtle.importKey("
+  "      'raw',"
+  "      keyData,"
+  "      { name: 'HMAC', hash: { name: 'SHA-256' } },"
+  "      false,"
+  "      ['sign']"
+  "   ).then(cryptoKey => {"
+  "      return crypto.subtle.sign('HMAC', cryptoKey, messageData);"
+  "   }).then(buffer => {"
+  "      const hmacArray = Array.from(new Uint8Array(buffer));"
+  "      return hmacArray.map(byte => byte.toString(16).padStart(2, '0')).join('');"
+  "   });"
+  "}"
+  "function uriWithHmacAuth(url) {"
+  "   let uri = url.replace(window.location.origin, '');"
+  "   uri += (uri.includes('?') ? '&' : '?') + 'seq=' + Date.now() + '.' + (msgSeqNr++);"
+  "   uri += '&nonce=' + (Math.random() * 9000000000 + 1000000000).toFixed();"
+  "   secret = localStorage.getItem('hmacsecret');"
+  "   hmac = hmacSha256(secret, uri);"
+  "   return hmac.then(hmac => window.location.origin + uri + '&hmac=' + hmac);"
+  "}";
+
+const char HTTP_SCRIPT_HMAC_NO_AUTH[] PROGMEM =
+  "let hmacSecret = localStorage.getItem('hmacsecret');"
+  "if (hmacSecret) {"
+  "  window.addEventListener('load', e =>"
+  "    uriWithHmacAuth(window.location.href).then(huri => window.location.href = huri));"
+  "} else {"
+  "  window.addEventListener('load', e =>"
+  "  document.getElementById('hmacsave').addEventListener('submit', e => {"
+  "    let hmacSecret = document.getElementById('hmacsecret').value;"
+  "    localStorage.setItem('hmacsecret', hmacSecret);"
+  "    uriWithHmacAuth(window.location.href).then(huri => window.location.href = huri);"
+  "    }), false);"
+  "}";
+
+const char HTTP_SCRIPT_HMAC_AUTH[] PROGMEM =
+  "window.addEventListener('load', eee => "
+  "Array.from(document.getElementsByTagName('form')).forEach(f => { let act = f.getAttribute('action'); f.addEventListener('submit', e => {"
+  " e.preventDefault(); uriWithHmacAuth('/' + (act != '.' ? act : '')).then(huri => window.location.href = huri);"
+  "})}));";
+
+const char HTTP_FORM_HMAC_SECRET[] PROGMEM =
+  "<p2>HMAC Secret</p2>"
+  "<form id='hmacsave'>"
+  "<input type='text' id='hmacsecret'/>"
+  "<input type='submit' value='Save!'>"
+  "</form>";
 
 #ifdef USE_UNISHOX_COMPRESSION
   #include "./html_compressed/HTTP_HEAD_LAST_SCRIPT.h"
@@ -794,9 +859,13 @@ bool HmacVerifyUrl() {
     return true;
 }
 
+bool IsHmacAuthEnabled(void) {
+    return strlen(SettingsText(SET_WEB_HMAC_SECRET)) > 0;
+}
+
 bool WebAuthenticate(void)
 {
-  if (strlen(SettingsText(SET_WEB_HMAC_SECRET))) {
+  if (IsHmacAuthEnabled()) {
     // HMAC based authentication is enabled
     return HmacVerifyUrl();
 
@@ -991,11 +1060,26 @@ void WSContentSendStyle_P(const char* formatP, ...) {
       WSContentSend_P(HTTP_SCRIPT_COUNTER);
     }
   }
+
+  if (IsHmacAuthEnabled()) {
+    WSContentSend_P(HTTP_SCRIPT_HMAC);
+    if (Webserver->hasArg("hmac")) {
+      WSContentSend_P(HTTP_SCRIPT_HMAC_AUTH);
+    }
+  }
+
 #ifdef ESP32
   WSContentSend_P(HTTP_HEAD_LAST_SCRIPT32);
 #else
   WSContentSend_P(HTTP_HEAD_LAST_SCRIPT);
 #endif
+
+  if (IsHmacAuthEnabled()) {
+    WSContentSend_P("<script src='https://cdnjs.cloudflare.com/ajax/libs/babel-polyfill/7.7.0/polyfill.min.js'></script>");
+    WSContentSend_P("<script src='https://cdnjs.cloudflare.com/ajax/libs/asmCrypto/2.3.2/asmcrypto.all.es5.min.js'></script>");
+    WSContentSend_P("<script src='https://cdn.rawgit.com/indutny/elliptic/master/dist/elliptic.min.js'></script>");
+    WSContentSend_P("<script src='https://cdn.jsdelivr.net/npm/webcrypto-liner@1.4.2/build/webcrypto-liner.shim.min.js'></script>");
+  }
 
   WSContentSend_P(HTTP_HEAD_STYLE1, WebColor(COL_FORM), WebColor(COL_INPUT), WebColor(COL_INPUT_TEXT), WebColor(COL_INPUT),
                   WebColor(COL_INPUT_TEXT), WebColor(COL_CONSOLE), WebColor(COL_CONSOLE_TEXT), WebColor(COL_BACKGROUND));
@@ -1276,7 +1360,14 @@ void HandleRoot(void)
 
   char stemp[33];
 
-  WSContentStart_P(PSTR(D_MAIN_MENU));
+  const bool isHmacAuthEnabled = IsHmacAuthEnabled();
+  const bool isHmacWithNoAuth = isHmacAuthEnabled && !Webserver->hasArg("hmac");
+
+  if (isHmacAuthEnabled && !isHmacWithNoAuth && !WebAuthenticate()) {
+    return;
+  }
+
+  WSContentStart_P(PSTR(D_MAIN_MENU), !isHmacAuthEnabled);
 #ifdef USE_SCRIPT_WEB_DISPLAY
   WSContentSend_P(HTTP_SCRIPT_ROOT, Settings->web_refresh, Settings->web_refresh);
 #else
@@ -1284,7 +1375,21 @@ void HandleRoot(void)
 #endif
   WSContentSend_P(HTTP_SCRIPT_ROOT_PART2);
 
+  if (isHmacAuthEnabled) {
+    WSContentSend_P(HTTP_SCRIPT_HMAC);
+  }
+
+  if (isHmacWithNoAuth) {
+    WSContentSend_P(HTTP_SCRIPT_HMAC_NO_AUTH);
+  }
+
   WSContentSendStyle();
+
+  if (isHmacWithNoAuth) {
+    WSContentSend_P(HTTP_FORM_HMAC_SECRET);
+    WSContentStop();
+    return;
+  }
 
   WSContentSend_P(PSTR("<div style='padding:0;' id='l1' name='l1'></div>"));
   if (TasmotaGlobal.devices_present) {
@@ -1444,13 +1549,13 @@ void HandleRoot(void)
 
 bool HandleRootStatusRefresh(void)
 {
+  if (!Webserver->hasArg("m")) {     // Status refresh requested
+    return false;
+  }
+
   if (!WebAuthenticate()) {
     Webserver->requestAuthentication();
     return true;
-  }
-
-  if (!Webserver->hasArg("m")) {     // Status refresh requested
-    return false;
   }
 
   #ifdef USE_SCRIPT_WEB_DISPLAY

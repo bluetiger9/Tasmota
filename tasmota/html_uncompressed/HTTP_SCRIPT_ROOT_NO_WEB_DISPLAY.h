@@ -17,7 +17,14 @@ const char HTTP_SCRIPT_ROOT[] PROGMEM =
         "lt=setTimeout(la,%d);"               // Settings.web_refresh
       "}"
     "};"
-    "x.open('GET','.?m=1'+a,true);"       // ?m related to Webserver->hasArg("m")
-    "x.send();"
+    "if (uriWithHmacAuth) {"
+      "uriWithHmacAuth('/?m=1' + a).then(huri => {"
+        "x.open('GET', huri, true);"       // ?m related to Webserver->hasArg("m")
+        "x.send();"
+      "});"
+    "} else {"
+      "x.open('GET','.?m=1'+a,true);"       // ?m related to Webserver->hasArg("m")
+      "x.send();"
+    "}"
     "ft=setTimeout(la,2e4);"              // 20s failure timeout
   "}";
