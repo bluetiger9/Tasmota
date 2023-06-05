@@ -759,7 +759,7 @@ bool HmacVerifyUrl() {
 
     // validate sequence
     const float utcMillis = 1000.0 * UtcTime();
-    if ((seq < hmacLastSeq) || (seq < utcMillis)) {
+    if ((seq <= hmacLastSeq) || (seq < utcMillis)) {
       Webserver->send(403, "text/plain", "invalid seq");
       return false;
     }
