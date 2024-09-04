@@ -698,9 +698,10 @@
 
 #undef USE_ARDUINO_OTA                           // Disable support for Arduino OTA
 #undef USE_DOMOTICZ                              // Disable Domoticz
-#undef USE_HOME_ASSISTANT                        // Disable Home Assistant
+#define USE_HOME_ASSISTANT                       // Enable Home Assistant
 #define USE_TASMOTA_DISCOVERY                    // Enable Tasmota Discovery support (+2k code)
-#undef USE_MQTT_TLS                              // Disable TLS support won't work as the MQTTHost is not set
+#define USE_MQTT_TLS                             // Enable MQTT TLS support
+//#define MQTT_TLS_ENABLED
 #undef USE_KNX                                   // Disable KNX IP Protocol Support
 //#undef USE_WEBSERVER                             // Disable Webserver
 #undef USE_ENHANCED_GUI_WIFI_SCAN                // Disable wifi scan output with BSSID (+0k5 code)
